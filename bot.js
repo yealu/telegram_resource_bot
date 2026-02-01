@@ -51,6 +51,49 @@ const notion = new Client({ auth: NOTION_TOKEN });
 const anthropic = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
 
 // ============================================
+// 프로세스 잠금 (중복 실행 방지)
+// ============================================
+const fs = require('fs');
+const LOCK_FILE = require('path').join(__dirname, '.bot.lock');
+
+// 잠금 파일 확인
+if (fs.existsSync(LOCK_FILE)) {
+  try {
+    const lockData = JSON.parse(fs.readFileSync(LOCK_FILE, 'utf-8'));
+    const lockAge = Date.now() - lockData.timestamp;
+
+    // 5분 이상 된 잠금은 무효 (이전 프로세스가 강제 종료됨)
+    if (lockAge < 5 * 60 * 1000) {
+      console.error('❌ 다른 봇 인스턴스가 이미 실행 중입니다!');
+      console.error(`   PID: ${lockData.pid} (${Math.floor(lockAge / 1000)}초 전 시작)`);
+      process.exit(1);
+    }
+  } catch (e) {
+    // 잠금 파일이 손상됨, 무시하고 계속
+  }
+}
+
+// 잠금 파일 생성
+fs.writeFileSync(LOCK_FILE, JSON.stringify({
+  pid: process.pid,
+  timestamp: Date.now(),
+  started: new Date().toISOString()
+}));
+
+// 프로세스 종료 시 잠금 파일 제거
+process.on('exit', () => {
+  try { fs.unlinkSync(LOCK_FILE); } catch (e) {}
+});
+process.on('SIGINT', () => {
+  try { fs.unlinkSync(LOCK_FILE); } catch (e) {}
+  process.exit(0);
+});
+process.on('SIGTERM', () => {
+  try { fs.unlinkSync(LOCK_FILE); } catch (e) {}
+  process.exit(0);
+});
+
+// ============================================
 // 메시지 중복 방지 (파일 기반 영속 저장소)
 // ============================================
 // 프로세스 재시작에도 살아남는 파일 기반 중복방지

@@ -37,6 +37,9 @@ tmpclaude-*
 processed_messages.json
 processed_messages.json.tmp
 
+# Process lock file
+.bot.lock
+
 # Windows reserved filenames
 nul
 
