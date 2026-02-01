@@ -185,12 +185,15 @@ bot.on('message', (msg) => {
   // 최우선 중복 방지: 큐에 넣기 전에 체크 (레이스 컨디션 방지)
   // ============================================
   const messageId = msg.message_id;
+  console.log(`🔍 메시지 수신: message_id=${messageId}, chat_id=${msg.chat.id}, text="${(msg.text || '').substring(0, 30)}..."`);
+
   if (isMessageInStore(messageId)) {
     console.log(`⏭️ 중복 감지 (메시지 핸들러, message_id: ${messageId}), 즉시 건너뜀`);
     return;
   }
 
   // 임시로 저장소에 추가 (처리 시작 마킹)
+  console.log(`✅ 새 메시지 처리 시작: message_id=${messageId}`);
   addMessageToStore(messageId);
 
   // 직렬 큐: 이전 메시지 처리가 완료된 후 다음 메시지 처리
