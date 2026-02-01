@@ -248,13 +248,15 @@ async function handleMessage(msg) {
     } else {
       console.log(`✅ 노션 저장 완료 - Page ID: ${notionPage.id}`);
       await bot.deleteMessage(chatId, processingMsg.message_id);
-      await bot.sendMessage(chatId,
+      console.log(`📤 최종 응답 전송 중... (message_id: ${messageId})`);
+      const finalMsg = await bot.sendMessage(chatId,
         `✅ 저장 완료!\n\n` +
         `📌 제목: ${title.substring(0, 50)}${title.length > 50 ? '...' : ''}\n` +
         `📂 카테고리: ${analysis.category}\n` +
         `📝 요약: ${analysis.summary.substring(0, 100)}${analysis.summary.length > 100 ? '...' : ''}\n\n` +
         `🔗 노션에서 확인하세요!`
       );
+      console.log(`✅ 최종 응답 전송 완료 - Response message_id: ${finalMsg.message_id}`);
     }
 
     // 저장소에는 이미 추가됨 (메시지 핸들러에서 처리)
