@@ -181,6 +181,18 @@ bot.on('message', (msg) => {
   const messageText = msg.text || msg.caption || '';
   if (messageText.startsWith('/') || !messageText.trim()) return;
 
+  // ============================================
+  // 최우선 중복 방지: 큐에 넣기 전에 체크 (레이스 컨디션 방지)
+  // ============================================
+  const messageId = msg.message_id;
+  if (isMessageInStore(messageId)) {
+    console.log(`⏭️ 중복 감지 (메시지 핸들러, message_id: ${messageId}), 즉시 건너뜀`);
+    return;
+  }
+
+  // 임시로 저장소에 추가 (처리 시작 마킹)
+  addMessageToStore(messageId);
+
   // 직렬 큐: 이전 메시지 처리가 완료된 후 다음 메시지 처리
   processingLock = processingLock
     .then(() => handleMessage(msg))
@@ -201,14 +213,6 @@ async function handleMessage(msg) {
   }
 
   console.log(`\n📨 메시지 처리 시작 (message_id: ${messageId}): "${messageText.substring(0, 50)}..."`);
-
-  // ============================================
-  // 1단계 중복 방지: 파일 기반 영속 저장소 (재시작에도 유지)
-  // ============================================
-  if (isMessageInStore(messageId)) {
-    console.log(`⏭️ 중복 감지 (파일 저장소, message_id: ${messageId}), 건너뜀`);
-    return;
-  }
 
   try {
     // 처리 시작 알림
@@ -250,8 +254,7 @@ async function handleMessage(msg) {
       );
     }
 
-    // 저장 성공 후에만 파일 저장소에 마킹 (실패 시 재시도 가능)
-    addMessageToStore(messageId);
+    // 저장소에는 이미 추가됨 (메시지 핸들러에서 처리)
 
   } catch (error) {
     console.error('❌ Error:', error);
