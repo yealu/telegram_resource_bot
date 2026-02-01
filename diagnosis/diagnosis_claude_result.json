@@ -1,0 +1,57 @@
+{
+  "timestamp": "2026-01-31T14:15:47.941Z",
+  "tests": [
+    {
+      "label": "English_to_Korean",
+      "inputText": "\nOpenAI has just announced GPT-5, their most advanced AI model yet. \nThe new model shows significant...",
+      "success": true,
+      "responseTime": 2050,
+      "rawResponse": "{\"category\": \"AI/ML\", \"summary\": \"OpenAI가 가장 진보된 AI 모델인 GPT-5를 발표했습니다. 이 새로운 모델은 추론, 창의성, 사실적 정확성에서 큰 향상을 보였으며, 전문가들은 이것이 기업 운영 방식을 혁명적으로 변화시킬 것이라고 예측하고 있습니다.\"}",
+      "jsonCount": 1,
+      "parsedResults": [
+        {
+          "index": 0,
+          "category": "AI/ML",
+          "summary": "OpenAI가 가장 진보된 AI 모델인 GPT-5를 발표했습니다. 이 새로운 모델은 추론, 창의성, 사실적 정확성에서 큰 향상을 보였으며, 전문가들은 이것이 기업 운영 방식을 혁명적으로 변화시킬 것이라고 예측하고 있습니다."
+        }
+      ],
+      "summaryAnalysis": {
+        "hasKorean": true,
+        "hasEnglish": true,
+        "language": "MIXED"
+      },
+      "warnings": []
+    },
+    {
+      "label": "Korean_to_Korean",
+      "inputText": "\n국내 AI 스타트업이 대규모 투자를 유치했습니다.\n이번 투자로 인해 글로벌 시장 진출이 가속화될 전망입니다.\n전문가들은 한국 AI 산업의 성장 가능성을 높이 평가하고 있습니다.\n...",
+      "success": true,
+      "responseTime": 1291,
+      "rawResponse": "{\"category\": \"AI/ML\", \"summary\": \"국내 AI 스타트업이 대규모 투자를 유치하여 글로벌 시장 진출이 가속화될 것으로 보입니다. 전문가들은 한국 AI 산업의 성장 가능성을 높이 평가하고 있습니다.\"}",
+      "jsonCount": 1,
+      "parsedResults": [
+        {
+          "index": 0,
+          "category": "AI/ML",
+          "summary": "국내 AI 스타트업이 대규모 투자를 유치하여 글로벌 시장 진출이 가속화될 것으로 보입니다. 전문가들은 한국 AI 산업의 성장 가능성을 높이 평가하고 있습니다."
+        }
+      ],
+      "summaryAnalysis": {
+        "hasKorean": true,
+        "hasEnglish": true,
+        "language": "MIXED"
+      },
+      "warnings": []
+    }
+  ],
+  "summary": {
+    "totalTests": 2,
+    "successfulTests": 2,
+    "hasMultipleJsonIssue": false,
+    "hasEnglishSummaryIssue": false,
+    "diagnosis": [
+      "OK: Claude API appears to be working correctly",
+      "NEXT: Run test-diagnosis-telegram.js to check Telegram message handling"
+    ]
+  }
+}

@@ -1,0 +1,47 @@
+# Dependencies
+node_modules/
+package-lock.json
+yarn.lock
+
+# Environment variables
+.env
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Claude AI temporary files
+.claude/
+tmpclaude-*
+
+# Dedup store (runtime state)
+processed_messages.json
+processed_messages.json.tmp
+
+# Windows reserved filenames
+nul
+
+# Security: 보안 정보가 포함될 수 있는 문서들
+# 주의: 이 파일들은 이미 Git 히스토리에 있으므로 추적됨
+# REPLIT_DEPLOY.md
+# SECURITY_TODO.md
+# SECURITY_AUDIT.md
