@@ -106,6 +106,14 @@ loadProcessedMessages();
 let processingLock = Promise.resolve();
 
 // ============================================
+// 이벤트 리스너 중복 등록 방지
+// ============================================
+// Replit/개발 환경에서 핫 리로드 시 기존 리스너 제거
+bot.removeAllListeners('message');
+bot.removeAllListeners('polling_error');
+console.log('🔄 기존 이벤트 리스너 제거 완료');
+
+// ============================================
 // Express 서버 (슬립 모드 방지용)
 // ============================================
 // Replit/Render 같은 무료 호스팅에서 슬립 모드를 방지하기 위해
@@ -176,6 +184,9 @@ bot.onText(/\/help/, (msg) => {
 // ============================================
 // 메시지 핸들러 (직렬 큐로 레이스 컨디션 방지)
 // ============================================
+// 핸들러 등록 전 확인
+console.log(`📋 메시지 핸들러 등록 중... (현재 리스너 수: ${bot.listenerCount('message')}개)`);
+
 bot.on('message', (msg) => {
   // 명령어와 빈 메시지는 큐에 넣지 않고 즉시 필터링
   const messageText = msg.text || msg.caption || '';
@@ -185,15 +196,15 @@ bot.on('message', (msg) => {
   // 최우선 중복 방지: 큐에 넣기 전에 체크 (레이스 컨디션 방지)
   // ============================================
   const messageId = msg.message_id;
-  console.log(`🔍 메시지 수신: message_id=${messageId}, chat_id=${msg.chat.id}, text="${(msg.text || '').substring(0, 30)}..."`);
+  console.log(`🔍 [HANDLER] 메시지 수신: message_id=${messageId}, chat_id=${msg.chat.id}, text="${(msg.text || '').substring(0, 30)}...", 리스너 수: ${bot.listenerCount('message')}`);
 
   if (isMessageInStore(messageId)) {
-    console.log(`⏭️ 중복 감지 (메시지 핸들러, message_id: ${messageId}), 즉시 건너뜀`);
+    console.log(`⏭️ [HANDLER] 중복 감지 (message_id: ${messageId}), 즉시 건너뜀`);
     return;
   }
 
   // 임시로 저장소에 추가 (처리 시작 마킹)
-  console.log(`✅ 새 메시지 처리 시작: message_id=${messageId}`);
+  console.log(`✅ [HANDLER] 새 메시지 처리 시작: message_id=${messageId}`);
   addMessageToStore(messageId);
 
   // 직렬 큐: 이전 메시지 처리가 완료된 후 다음 메시지 처리
@@ -201,6 +212,8 @@ bot.on('message', (msg) => {
     .then(() => handleMessage(msg))
     .catch(err => console.error('❌ 메시지 처리 큐 오류:', err));
 });
+
+console.log(`✅ 메시지 핸들러 등록 완료 (현재 리스너 수: ${bot.listenerCount('message')}개)`);
 
 // ============================================
 // 메시지 처리 함수 (메인 로직)
