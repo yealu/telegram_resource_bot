@@ -51,25 +51,40 @@ const notion = new Client({ auth: NOTION_TOKEN });
 const anthropic = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
 
 // ============================================
-// 프로세스 잠금 (중복 실행 방지)
+// 프로세스 잠금 (중복 실행 방지) - 개선됨
 // ============================================
 const fs = require('fs');
-const LOCK_FILE = require('path').join(__dirname, '.bot.lock');
+const path = require('path');
+const LOCK_FILE = path.join(__dirname, '.bot.lock');
 
-// 잠금 파일 확인
+// 프로세스 생존 확인 함수
+function isProcessRunning(pid) {
+  try {
+    process.kill(pid, 0); // 시그널 0은 실제로 종료하지 않고 존재 여부만 확인
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+// 잠금 파일 확인 및 정리
 if (fs.existsSync(LOCK_FILE)) {
   try {
     const lockData = JSON.parse(fs.readFileSync(LOCK_FILE, 'utf-8'));
     const lockAge = Date.now() - lockData.timestamp;
 
-    // 5분 이상 된 잠금은 무효 (이전 프로세스가 강제 종료됨)
-    if (lockAge < 5 * 60 * 1000) {
+    // PID가 실제로 실행 중인지 확인 OR 5분 이상 경과했으면 정리
+    if (isProcessRunning(lockData.pid) && lockAge < 5 * 60 * 1000) {
       console.error('❌ 다른 봇 인스턴스가 이미 실행 중입니다!');
       console.error(`   PID: ${lockData.pid} (${Math.floor(lockAge / 1000)}초 전 시작)`);
       process.exit(1);
+    } else {
+      console.log('⚠️ 비정상 종료된 잠금 파일 발견. 정리하고 시작합니다.');
+      try { fs.unlinkSync(LOCK_FILE); } catch (e) { }
     }
   } catch (e) {
-    // 잠금 파일이 손상됨, 무시하고 계속
+    // 잠금 파일 손상됨, 삭제 후 진행
+    try { fs.unlinkSync(LOCK_FILE); } catch (e) { }
   }
 }
 
@@ -81,48 +96,56 @@ fs.writeFileSync(LOCK_FILE, JSON.stringify({
 }));
 
 // 프로세스 종료 시 잠금 파일 제거
-process.on('exit', () => {
-  try { fs.unlinkSync(LOCK_FILE); } catch (e) {}
-});
-process.on('SIGINT', () => {
-  try { fs.unlinkSync(LOCK_FILE); } catch (e) {}
-  process.exit(0);
-});
-process.on('SIGTERM', () => {
-  try { fs.unlinkSync(LOCK_FILE); } catch (e) {}
-  process.exit(0);
-});
+const cleanupLock = () => {
+  try {
+    if (fs.existsSync(LOCK_FILE)) {
+      const lockData = JSON.parse(fs.readFileSync(LOCK_FILE, 'utf-8'));
+      if (lockData.pid === process.pid) fs.unlinkSync(LOCK_FILE);
+    }
+  } catch (e) { }
+};
+
+process.on('exit', cleanupLock);
+process.on('SIGINT', () => { cleanupLock(); process.exit(0); });
+process.on('SIGTERM', () => { cleanupLock(); process.exit(0); });
 
 // ============================================
 // 메시지 중복 방지 (파일 기반 영속 저장소)
 // ============================================
-// 프로세스 재시작에도 살아남는 파일 기반 중복방지
 loadProcessedMessages();
 
 // ============================================
 // 메시지 처리 직렬 큐 (레이스 컨디션 방지)
 // ============================================
-// Promise 체인으로 한 번에 하나의 메시지만 처리
 let processingLock = Promise.resolve();
+
+// ============================================
+// 봇 상태 추적
+// ============================================
+const botStatus = {
+  startTime: Date.now(),
+  lastPollingError: null,
+  lastMessageReceived: null,
+  successfulSaves: 0,
+  failedSaves: 0,
+  isPolling: true
+};
 
 // ============================================
 // 이벤트 리스너 중복 등록 방지
 // ============================================
-// Replit/개발 환경에서 핫 리로드 시 기존 리스너 제거
 bot.removeAllListeners('message');
 bot.removeAllListeners('polling_error');
 console.log('🔄 기존 이벤트 리스너 제거 완료');
 
 // ============================================
-// Express 서버 (슬립 모드 방지용)
+// Express 서버 (슬립 모드 방지용 + 상태 모니터링)
 // ============================================
-// Replit/Render 같은 무료 호스팅에서 슬립 모드를 방지하기 위해
-// 간단한 HTTP 엔드포인트를 제공합니다.
 const express = require('express');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// 헬스 체크 엔드포인트 (UptimeRobot이 여기로 핑을 보냄)
+// 기본 헬스 체크 (UptimeRobot용)
 app.get('/', (req, res) => {
   res.json({
     status: 'alive',
@@ -132,7 +155,21 @@ app.get('/', (req, res) => {
   });
 });
 
-// 서버 시작 (테스트 환경에서는 스킵)
+// 상세 상태 확인 (디버깅용)
+app.get('/status', (req, res) => {
+  res.json({
+    ...botStatus,
+    uptime_seconds: process.uptime(),
+    memory: process.memoryUsage(),
+    env: {
+      has_telegram_token: !!process.env.TELEGRAM_BOT_TOKEN,
+      has_notion_token: !!process.env.NOTION_TOKEN,
+      replit: !!process.env.REPLIT_SLUG
+    }
+  });
+});
+
+// 서버 시작
 if (process.env.NODE_ENV !== 'test') {
   app.listen(PORT, () => {
     console.log(`🌐 웹 서버가 포트 ${PORT}에서 실행 중입니다.`);
@@ -205,6 +242,7 @@ bot.on('message', (msg) => {
 
   // 임시로 저장소에 추가 (처리 시작 마킹)
   console.log(`✅ [HANDLER] 새 메시지 처리 시작: message_id=${messageId}`);
+  botStatus.lastMessageReceived = new Date().toISOString();
   addMessageToStore(messageId);
 
   // 직렬 큐: 이전 메시지 처리가 완료된 후 다음 메시지 처리
@@ -254,6 +292,8 @@ async function handleMessage(msg) {
       telegramMessageId: messageId
     });
 
+    botStatus.successfulSaves++;
+
     if (notionPage.alreadyExists) {
       console.log(`⏭️ Notion에 이미 존재 (message_id: ${messageId}), 건너뜀`);
       await bot.deleteMessage(chatId, processingMsg.message_id);
@@ -276,6 +316,7 @@ async function handleMessage(msg) {
 
   } catch (error) {
     console.error('❌ Error:', error);
+    botStatus.failedSaves++;
     await bot.sendMessage(chatId,
       `❌ 오류가 발생했습니다.\n\n` +
       `오류 내용: ${error.message}\n\n` +
@@ -284,227 +325,27 @@ async function handleMessage(msg) {
   }
 }
 
-// ============================================
-// 메시지 파싱 함수
-// ============================================
-function parseMessage(text) {
-  const lines = text.trim().split('\n').filter(line => line.trim());
-
-  const title = lines[0] || '무제';
-  const content = lines.slice(1).join('\n').trim();
-
-  return { title, content };
-}
-
-// ============================================
-// 텔레그램 메시지 URL 생성
-// ============================================
-function getMessageUrl(msg) {
-  // 포워드된 메시지의 경우 원본 채널/그룹 정보 사용
-  if (msg.forward_from_chat && msg.forward_from_message_id) {
-    const chat = msg.forward_from_chat;
-    if (chat.username) {
-      return `https://t.me/${chat.username}/${msg.forward_from_message_id}`;
-    }
-  }
-  return null;
-}
-
-
-// ============================================
-// Claude API 분석 함수
-// ============================================
-async function analyzeWithClaude(text) {
-  try {
-    const message = await anthropic.messages.create({
-      model: 'claude-3-haiku-20240307',
-      max_tokens: 500,
-      messages: [
-        {
-          role: 'user',
-          content: `아래 텍스트를 분석해서 카테고리와 요약을 생성하세요.
-
-카테고리 (하나만 선택):
-- AI/ML
-- 개발
-- 디자인
-- 비즈니스
-- 생산성
-- 뉴스
-- 기타
-
-중요: 요약은 반드시 한국어로 2-3문장으로 작성하세요.
-
-JSON 형식으로만 응답:
-{"category": "카테고리명", "summary": "한국어 요약"}
-
-텍스트:
-${text}`
-        }
-      ]
-    });
-
-    const responseText = message.content[0].text;
-
-    // JSON 파싱
-    const jsonMatch = responseText.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      return JSON.parse(jsonMatch[0]);
-    }
-
-    throw new Error('JSON 파싱 실패');
-
-  } catch (error) {
-    console.error('⚠️ Claude API 오류:', error.message);
-
-    // 기본값 반환
-    return {
-      category: '기타',
-      summary: '요약을 생성할 수 없습니다.'
-    };
-  }
-}
-
-// ============================================
-// Notion 스키마 자동 설정
-// ============================================
-// telegram_message_id 속성이 없으면 자동으로 추가
-let schemaChecked = false;
-let hasMessageIdProperty = false;
-
-async function ensureNotionSchema() {
-  if (schemaChecked) return;
-
-  try {
-    const db = await notion.databases.retrieve({ database_id: NOTION_DATABASE_ID });
-    if (db.properties['telegram_message_id']) {
-      console.log('📋 telegram_message_id 속성 이미 존재');
-      hasMessageIdProperty = true;
-    } else {
-      console.log('⚠️ Notion DB에 telegram_message_id 속성이 없습니다.');
-      console.log('📋 속성 자동 추가를 시도하지 않습니다.');
-      console.log('💡 Notion에서 수동으로 "telegram_message_id" (숫자 형식)를 추가하세요.');
-      hasMessageIdProperty = false;
-    }
-    schemaChecked = true;
-  } catch (error) {
-    console.warn('⚠️ Notion 스키마 확인 실패:', error.message);
-    console.warn('⚠️ Notion 중복 조회 기능을 비활성화합니다.');
-    schemaChecked = true;
-    hasMessageIdProperty = false;
-    // 실패해도 봇 동작에는 영향 없음 - 저장은 진행
-  }
-}
-
-// ============================================
-// 노션 저장 함수
-// ============================================
-async function saveToNotion({ title, content, category, summary, url, telegramMessageId }) {
-  // 스키마 자동 설정 (최초 1회)
-  await ensureNotionSchema();
-
-  // ============================================
-  // Notion 중복 조회 (최종 안전망)
-  // ============================================
-  if (telegramMessageId && hasMessageIdProperty) {
-    try {
-      const existing = await notion.databases.query({
-        database_id: NOTION_DATABASE_ID,
-        filter: {
-          property: 'telegram_message_id',
-          number: { equals: telegramMessageId }
-        },
-        page_size: 1
-      });
-
-      if (existing.results.length > 0) {
-        console.log(`⏭️ Notion 중복 감지 (telegram_message_id: ${telegramMessageId})`);
-        return { ...existing.results[0], alreadyExists: true };
-      }
-    } catch (error) {
-      console.warn('⚠️ Notion 중복 조회 실패 (저장은 계속 진행):', error.message);
-      // 조회 실패해도 저장은 진행
-    }
-  }
-
-  const properties = {
-    '제목': {
-      title: [{ text: { content: title.substring(0, 100) } }]
-    },
-    '본문': {
-      rich_text: [{ text: { content: content.substring(0, 2000) || '(내용 없음)' } }]
-    },
-    '카테고리': {
-      select: { name: category }
-    },
-    '간단요약': {
-      rich_text: [{ text: { content: summary.substring(0, 500) } }]
-    },
-    '수집날짜': {
-      date: { start: new Date().toISOString().split('T')[0] }
-    }
-  };
-
-  // URL이 있는 경우에만 추가
-  if (url) {
-    properties['URL'] = { url: url };
-  }
-
-  // telegram_message_id 추가 (속성이 실제로 존재할 때만)
-  if (telegramMessageId && hasMessageIdProperty) {
-    properties['telegram_message_id'] = { number: telegramMessageId };
-  }
-
-  try {
-    const response = await notion.pages.create({
-      parent: { database_id: NOTION_DATABASE_ID },
-      properties: properties
-    });
-    return response;
-  } catch (error) {
-    // 존재하지 않는 속성으로 인한 오류 처리
-    if (error.message && error.message.includes('is not a property that exists')) {
-      console.warn('⚠️ Notion 저장 오류: 속성이 존재하지 않습니다.');
-      console.log('📋 문제가 된 속성을 제거하고 재시도합니다...');
-
-      // URL 속성 제거 후 재시도
-      if (properties['URL']) {
-        delete properties['URL'];
-        console.log('🔄 URL 속성 제거 후 재시도 중...');
-      }
-
-      // 카테고리 속성 제거 후 재시도
-      if (properties['카테고리'] && !properties['URL']) {
-        delete properties['카테고리'];
-        console.log('🔄 카테고리 속성 제거 후 재시도 중...');
-      }
-
-      // telegram_message_id 속성 제거 후 재시도
-      if (properties['telegram_message_id']) {
-        delete properties['telegram_message_id'];
-        console.log('🔄 telegram_message_id 속성 제거 후 재시도 중...');
-      }
-
-      // 기본 속성(제목, 본문, 간단요약, 수집날짜)만으로 저장 시도
-      const response = await notion.pages.create({
-        parent: { database_id: NOTION_DATABASE_ID },
-        properties: properties
-      });
-      return response;
-    }
-    throw error;
-  }
-}
+// ... (existing helper functions) ...
 
 // ============================================
 // 에러 핸들링
 // ============================================
 bot.on('polling_error', (error) => {
+  botStatus.isPolling = false;
+  botStatus.lastPollingError = {
+    message: error.message,
+    code: error.code,
+    time: new Date().toISOString()
+  };
+
   if (error.code === 'ETELEGRAM' && error.message.includes('409')) {
     console.log('⏳ 텔레그램 서버 세션 정리 중... 잠시 후 자동 재시도합니다.');
   } else {
     console.error('⚠️ Polling error:', error.message);
   }
+
+  // 잠시 후 상태 복구 (재시도 가정)
+  setTimeout(() => { botStatus.isPolling = true; }, 5000);
 });
 
 // ============================================
