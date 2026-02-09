@@ -325,7 +325,218 @@ async function handleMessage(msg) {
   }
 }
 
-// ... (existing helper functions) ...
+
+// ============================================
+// 메시지 파싱 함수
+// ============================================
+function parseMessage(text) {
+  const lines = text.trim().split('\n').filter(line => line.trim());
+
+  const title = lines[0] || '무제';
+  const content = lines.slice(1).join('\n').trim();
+
+  return { title, content };
+}
+
+// ============================================
+// 텔레그램 메시지 URL 생성
+// ============================================
+function getMessageUrl(msg) {
+  // 포워드된 메시지의 경우 원본 채널/그룹 정보 사용
+  if (msg.forward_from_chat && msg.forward_from_message_id) {
+    const chat = msg.forward_from_chat;
+    if (chat.username) {
+      return `https://t.me/${chat.username}/${msg.forward_from_message_id}`;
+    }
+  }
+  return null;
+}
+
+
+// ============================================
+// Claude API 분석 함수
+// ============================================
+async function analyzeWithClaude(text) {
+  try {
+    const message = await anthropic.messages.create({
+      model: 'claude-3-haiku-20240307',
+      max_tokens: 500,
+      messages: [
+        {
+          role: 'user',
+          content: `아래 텍스트를 분석해서 카테고리와 요약을 생성하세요.
+
+카테고리 (하나만 선택):
+- AI/ML
+- 개발
+- 디자인
+- 비즈니스
+- 생산성
+- 뉴스
+- 기타
+
+중요: 요약은 반드시 한국어로 2-3문장으로 작성하세요.
+
+JSON 형식으로만 응답:
+{"category": "카테고리명", "summary": "한국어 요약"}
+
+텍스트:
+${text}`
+        }
+      ]
+    });
+
+    const responseText = message.content[0].text;
+
+    // JSON 파싱
+    const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      return JSON.parse(jsonMatch[0]);
+    }
+
+    throw new Error('JSON 파싱 실패');
+
+  } catch (error) {
+    console.error('⚠️ Claude API 오류:', error.message);
+
+    // 기본값 반환
+    return {
+      category: '기타',
+      summary: '요약을 생성할 수 없습니다.'
+    };
+  }
+}
+
+// ============================================
+// Notion 스키마 자동 설정
+// ============================================
+// telegram_message_id 속성이 없으면 자동으로 추가
+let schemaChecked = false;
+let hasMessageIdProperty = false;
+
+async function ensureNotionSchema() {
+  if (schemaChecked) return;
+
+  try {
+    const db = await notion.databases.retrieve({ database_id: NOTION_DATABASE_ID });
+    if (db.properties['telegram_message_id']) {
+      console.log('📋 telegram_message_id 속성 이미 존재');
+      hasMessageIdProperty = true;
+    } else {
+      console.log('⚠️ Notion DB에 telegram_message_id 속성이 없습니다.');
+      console.log('📋 속성 자동 추가를 시도하지 않습니다.');
+      console.log('💡 Notion에서 수동으로 "telegram_message_id" (숫자 형식)를 추가하세요.');
+      hasMessageIdProperty = false;
+    }
+    schemaChecked = true;
+  } catch (error) {
+    console.warn('⚠️ Notion 스키마 확인 실패:', error.message);
+    console.warn('⚠️ Notion 중복 조회 기능을 비활성화합니다.');
+    schemaChecked = true;
+    hasMessageIdProperty = false;
+    // 실패해도 봇 동작에는 영향 없음 - 저장은 진행
+  }
+}
+
+// ============================================
+// 노션 저장 함수
+// ============================================
+async function saveToNotion({ title, content, category, summary, url, telegramMessageId }) {
+  // 스키마 자동 설정 (최초 1회)
+  await ensureNotionSchema();
+
+  // ============================================
+  // Notion 중복 조회 (최종 안전망)
+  // ============================================
+  if (telegramMessageId && hasMessageIdProperty) {
+    try {
+      const existing = await notion.databases.query({
+        database_id: NOTION_DATABASE_ID,
+        filter: {
+          property: 'telegram_message_id',
+          number: { equals: telegramMessageId }
+        },
+        page_size: 1
+      });
+
+      if (existing.results.length > 0) {
+        console.log(`⏭️ Notion 중복 감지 (telegram_message_id: ${telegramMessageId})`);
+        return { ...existing.results[0], alreadyExists: true };
+      }
+    } catch (error) {
+      console.warn('⚠️ Notion 중복 조회 실패 (저장은 계속 진행):', error.message);
+      // 조회 실패해도 저장은 진행
+    }
+  }
+
+  const properties = {
+    '제목': {
+      title: [{ text: { content: title.substring(0, 100) } }]
+    },
+    '본문': {
+      rich_text: [{ text: { content: content.substring(0, 2000) || '(내용 없음)' } }]
+    },
+    '카테고리': {
+      select: { name: category }
+    },
+    '간단요약': {
+      rich_text: [{ text: { content: summary.substring(0, 500) } }]
+    },
+    '수집날짜': {
+      date: { start: new Date().toISOString().split('T')[0] }
+    }
+  };
+
+  // URL이 있는 경우에만 추가
+  if (url) {
+    properties['URL'] = { url: url };
+  }
+
+  // telegram_message_id 추가 (속성이 실제로 존재할 때만)
+  if (telegramMessageId && hasMessageIdProperty) {
+    properties['telegram_message_id'] = { number: telegramMessageId };
+  }
+
+  try {
+    const response = await notion.pages.create({
+      parent: { database_id: NOTION_DATABASE_ID },
+      properties: properties
+    });
+    return response;
+  } catch (error) {
+    // 존재하지 않는 속성으로 인한 오류 처리
+    if (error.message && error.message.includes('is not a property that exists')) {
+      console.warn('⚠️ Notion 저장 오류: 속성이 존재하지 않습니다.');
+      console.log('📋 문제가 된 속성을 제거하고 재시도합니다...');
+
+      // URL 속성 제거 후 재시도
+      if (properties['URL']) {
+        delete properties['URL'];
+        console.log('🔄 URL 속성 제거 후 재시도 중...');
+      }
+
+      // 카테고리 속성 제거 후 재시도
+      if (properties['카테고리'] && !properties['URL']) {
+        delete properties['카테고리'];
+        console.log('🔄 카테고리 속성 제거 후 재시도 중...');
+      }
+
+      // telegram_message_id 속성 제거 후 재시도
+      if (properties['telegram_message_id']) {
+        delete properties['telegram_message_id'];
+        console.log('🔄 telegram_message_id 속성 제거 후 재시도 중...');
+      }
+
+      // 기본 속성(제목, 본문, 간단요약, 수집날짜)만으로 저장 시도
+      const response = await notion.pages.create({
+        parent: { database_id: NOTION_DATABASE_ID },
+        properties: properties
+      });
+      return response;
+    }
+    throw error;
+  }
+}
 
 // ============================================
 // 에러 핸들링
