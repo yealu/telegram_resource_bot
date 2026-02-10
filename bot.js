@@ -13,8 +13,9 @@ const NOTION_DATABASE_ID = process.env.NOTION_DATABASE_ID;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 
 // ============================================
-// 환경 변수 검증
-// ============================================
+// 환경 변수 설정
+const SERVER_TAG = process.env.REPLIT_SLUG ? '☁️ Replit' : '💻 Local';
+
 if (!TELEGRAM_BOT_TOKEN || TELEGRAM_BOT_TOKEN === 'YOUR_BOT_TOKEN_HERE') {
   console.error('❌ TELEGRAM_BOT_TOKEN이 설정되지 않았습니다. .env 파일을 확인하세요.');
   process.exit(1);
@@ -55,6 +56,7 @@ const anthropic = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
 // ============================================
 const fs = require('fs');
 const path = require('path');
+const http = require('http'); // Self-Ping용 모듈 추가
 const LOCK_FILE = path.join(__dirname, '.bot.lock');
 
 // 프로세스 생존 확인 함수
@@ -145,6 +147,20 @@ const express = require('express');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// ✅ 접속 로그 미들웨어 (UptimeRobot 확인용)
+app.use((req, res, next) => {
+  // 핑 요청이나 루트 요청 시 로그 출력
+  if (req.path === '/' || req.path === '/ping') {
+    const userAgent = req.headers['user-agent'] || 'unknown';
+    // 로컬 Self-Ping은 로그를 간소화하거나 생략할 수 있음
+    // UptimeRobot 등 외부 접속은 명확히 로그를 남김
+    if (!req.ip.includes('127.0.0.1') && !req.ip.includes('::1')) {
+      console.log(`📡 외부 핑 수신: ${req.method} ${req.path} from ${req.ip} (${userAgent})`);
+    }
+  }
+  next();
+});
+
 // 기본 헬스 체크 (UptimeRobot용)
 app.get('/', (req, res) => {
   res.json({
@@ -169,11 +185,47 @@ app.get('/status', (req, res) => {
   });
 });
 
-// 서버 시작
-if (process.env.NODE_ENV !== 'test') {
+// ✅ Self-Ping 엔드포인트 (가벼운 응답)
+app.get('/ping', (req, res) => {
+  res.status(200).json({ status: 'ok', timestamp: Date.now() });
+});
+
+// ✅ Self-Ping 함수: 주기적으로 자신의 서버를 호출하여 슬립 모드 방지
+function startSelfPing(url) {
+  console.log(`⏰ Self-Ping 시작: ${url} (5분 간격)`);
+
+  // 첫 실행 즉시 수행
+  performPing(url);
+
+  setInterval(() => {
+    performPing(url);
+  }, 5 * 60 * 1000); // 5분마다 실행
+}
+
+function performPing(url) {
+  http.get(url, (res) => {
+    if (res.statusCode === 200) {
+      // 로그가 너무 많이 쌓이지 않도록 성공 시에는 간단히 출력하거나 생략 가능
+      // console.log(`📡 Self-Ping 성공: ${res.statusCode}`);
+    } else {
+      console.warn(`⚠️ Self-Ping 응답 이상: ${res.statusCode}`);
+    }
+  }).on('error', (err) => {
+    console.error(`❌ Self-Ping 실패: ${err.message}`);
+  });
+}
+
+// 서버 시작 (테스트 환경이 아닐 때만 실행)
+if (require.main === module && process.env.NODE_ENV !== 'test') {
   app.listen(PORT, () => {
     console.log(`🌐 웹 서버가 포트 ${PORT}에서 실행 중입니다.`);
-    console.log(`💡 슬립 모드 방지를 위해 UptimeRobot을 설정하세요!`);
+    console.log(`💡 슬립 모드 방지를 위해 내부 Self-Ping과 UptimeRobot을 함께 사용합니다.`);
+
+    // Replit 환경 또는 로컬 환경 감지하여 Self-Ping 시작
+    // REPLIT_DEV_DOMAIN 또는 REPLIT_SLUG 등을 확용할 수 있음 (외부 URL)
+    // 여기서는 가장 확실한 localhost로 핑을 보냄 (내부 트래픽 발생)
+    const pingUrl = `http://localhost:${PORT}/ping`;
+    startSelfPing(pingUrl);
   });
 }
 
@@ -303,7 +355,7 @@ async function handleMessage(msg) {
       await bot.deleteMessage(chatId, processingMsg.message_id);
       console.log(`📤 최종 응답 전송 중... (message_id: ${messageId})`);
       const finalMsg = await bot.sendMessage(chatId,
-        `✅ 저장 완료!\n\n` +
+        `✅ 저장 완료! [${SERVER_TAG}]\n\n` +
         `📌 제목: ${title.substring(0, 50)}${title.length > 50 ? '...' : ''}\n` +
         `📂 카테고리: ${analysis.category}\n` +
         `📝 요약: ${analysis.summary.substring(0, 100)}${analysis.summary.length > 100 ? '...' : ''}\n\n` +
@@ -318,7 +370,7 @@ async function handleMessage(msg) {
     console.error('❌ Error:', error);
     botStatus.failedSaves++;
     await bot.sendMessage(chatId,
-      `❌ 오류가 발생했습니다.\n\n` +
+      `❌ 오류가 발생했습니다. [${SERVER_TAG}]\n\n` +
       `오류 내용: ${error.message}\n\n` +
       `다시 시도해 주세요.`
     );
@@ -570,6 +622,19 @@ console.log('✅ Claude API initialized');
 console.log('🎉 Bot is now running and listening for messages!');
 
 // ============================================
+// 전역 에러 핸들링 (프로세스 종료 방지)
+// ============================================
+process.on('uncaughtException', (err) => {
+  console.error('❌ [CRITICAL] 예기치 않은 오류 발생 (Uncaught Exception):', err);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('❌ [CRITICAL] 처리되지 않은 Promise 거부 (Unhandled Rejection):', reason);
+});
+
+console.log('🛡️ 견고한 에러 핸들링이 적용되었습니다.');
+
+// ============================================
 // 테스트를 위한 export (프로덕션에서는 영향 없음)
 // ============================================
 if (typeof module !== 'undefined' && module.exports) {
@@ -579,6 +644,7 @@ if (typeof module !== 'undefined' && module.exports) {
     analyzeWithClaude,
     saveToNotion,
     ensureNotionSchema,
-    handleMessage
+    handleMessage,
+    app // 테스트용 export 추가
   };
 }
